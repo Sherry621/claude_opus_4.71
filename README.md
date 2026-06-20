@@ -17,13 +17,10 @@ sudo apt-get install -y gcc g++ cmake flex bison libreadline-dev
 
 ### 2. 构建项目
 
-我们约定统一使用相对路径 `rmdb` 进行开发。克隆项目后，进入 `rmdb` 目录并创建构建目录：
+克隆项目后，进入项目根目录并创建构建目录：
 
 ```bash
-# 1. 进入核心项目目录
-cd rmdb
-
-# 2. 创建并进入 build 目录，防止编译生成的中间文件污染源代码
+# 1. 创建并进入 build 目录，防止编译生成的中间文件污染源代码
 mkdir -p build
 cd build
 
