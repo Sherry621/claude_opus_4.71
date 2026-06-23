@@ -14,6 +14,10 @@
 #include "ast.h"
 #include "yacc.tab.h"
 #include <iostream>
+#include <cstdlib>
+#include <cerrno>
+#include <climits>
+#include <cstring>
 
 // automatically update location
 #define YY_USER_ACTION \
@@ -75,6 +79,7 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 "SET" { return SET; }
 "SELECT" { return SELECT; }
 "INT" { return INT; }
+"BIGINT" { return BIGINT; }
 "CHAR" { return CHAR; }
 "FLOAT" { return FLOAT; }
 "INDEX" { return INDEX; }
@@ -107,8 +112,17 @@ single_op ";"|"("|")"|","|"*"|"="|">"|"<"|"."
 }
     /* literals */
 {value_int} {
-    yylval->sv_int = atoi(yytext);
-    return VALUE_INT;
+    // 先按int64解析，落在INT(4字节)范围内则作为VALUE_INT，
+    // 否则作为VALUE_BIGINT（含超出int64的溢出情形，交由上层判定failure）
+    errno = 0;
+    long long v = strtoll(yytext, nullptr, 10);
+    if (errno != ERANGE && v >= INT_MIN && v <= INT_MAX) {
+        yylval->sv_int = (int)v;
+        return VALUE_INT;
+    } else {
+        yylval->sv_str = yytext;
+        return VALUE_BIGINT;
+    }
 }
 {value_float} {
     yylval->sv_float = atof(yytext);

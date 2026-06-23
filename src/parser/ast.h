@@ -12,6 +12,9 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 #include <string>
 #include <memory>
+#include <cstdint>
+#include <cstdlib>
+#include <cerrno>
 
 enum JoinType {
     INNER_JOIN, LEFT_JOIN, RIGHT_JOIN, FULL_JOIN
@@ -19,7 +22,7 @@ enum JoinType {
 namespace ast {
 
 enum SvType {
-    SV_TYPE_INT, SV_TYPE_FLOAT, SV_TYPE_STRING, SV_TYPE_BOOL
+    SV_TYPE_INT, SV_TYPE_FLOAT, SV_TYPE_STRING, SV_TYPE_BOOL, SV_TYPE_BIGINT
 };
 
 enum SvCompOp {
@@ -123,6 +126,18 @@ struct IntLit : public Value {
     int val;
 
     IntLit(int val_) : val(val_) {}
+};
+
+struct BigintLit : public Value {
+    int64_t val;
+    bool overflow;  // 字面量是否超出BIGINT(int64)的表示范围
+
+    BigintLit(const std::string &s) {
+        errno = 0;
+        char *end = nullptr;
+        val = std::strtoll(s.c_str(), &end, 10);
+        overflow = (errno == ERANGE);
+    }
 };
 
 struct FloatLit : public Value {

@@ -45,17 +45,46 @@ class SeqScanExecutor : public AbstractExecutor {
         fed_conds_ = conds_;
     }
 
-    void beginTuple() override {
-        
+    size_t tupleLen() const override { return len_; }
+
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+
+    std::string getType() override { return "SeqScanExecutor"; }
+
+    ColMeta get_col_offset(const TabCol &target) override {
+        return *get_col(cols_, target);
     }
 
-    void nextTuple() override {
-        
+    // 定位到第一条满足扫描条件的记录
+    void beginTuple() override {
+        scan_ = std::make_unique<RmScan>(fh_);
+        find_next_valid();
     }
+
+    // 定位到下一条满足扫描条件的记录
+    void nextTuple() override {
+        scan_->next();
+        find_next_valid();
+    }
+
+    bool is_end() const override { return scan_->is_end(); }
 
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        return fh_->get_record(rid_, context_);
     }
 
     Rid &rid() override { return rid_; }
+
+   private:
+    // 从当前scan位置开始，向后寻找第一条满足条件的记录
+    void find_next_valid() {
+        while (!scan_->is_end()) {
+            rid_ = scan_->rid();
+            auto rec = fh_->get_record(rid_, context_);
+            if (eval_conds(cols_, fed_conds_, rec.get())) {
+                return;
+            }
+            scan_->next();
+        }
+    }
 };

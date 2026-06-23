@@ -25,6 +25,9 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
     std::vector<Condition> fed_conds_;          // join条件
     bool isend;
 
+    std::vector<std::unique_ptr<RmRecord>> left_buf_;   // 左表物化后的全部记录
+    int left_pos_;                                      // 当前内层（左表）记录的下标
+
    public:
     NestedLoopJoinExecutor(std::unique_ptr<AbstractExecutor> left, std::unique_ptr<AbstractExecutor> right, 
                             std::vector<Condition> conds) {
@@ -43,17 +46,63 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
 
     }
 
-    void beginTuple() override {
+    size_t tupleLen() const override { return len_; }
 
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+
+    std::string getType() override { return "NestedLoopJoinExecutor"; }
+
+    // 右表为外层循环，左表（物化后）为内层循环
+    void beginTuple() override {
+        // 将左表的全部记录物化到缓冲区
+        left_buf_.clear();
+        for (left_->beginTuple(); !left_->is_end(); left_->nextTuple()) {
+            left_buf_.push_back(left_->Next());
+        }
+        right_->beginTuple();
+        left_pos_ = (int)left_buf_.size() - 1;
+        isend = false;
+        find_match();
     }
 
     void nextTuple() override {
-        
+        --left_pos_;
+        find_match();
     }
 
+    bool is_end() const override { return isend; }
+
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        return join_record();
     }
 
     Rid &rid() override { return _abstract_rid; }
+
+   private:
+    // 将当前左右记录拼接成一条连接后的记录
+    std::unique_ptr<RmRecord> join_record() {
+        auto right_rec = right_->Next();
+        auto &left_rec = left_buf_[left_pos_];
+        auto rec = std::make_unique<RmRecord>(len_);
+        memcpy(rec->data, left_rec->data, left_->tupleLen());
+        memcpy(rec->data + left_->tupleLen(), right_rec->data, right_->tupleLen());
+        return rec;
+    }
+
+    // 从当前左右位置开始，寻找下一对满足连接条件的记录
+    void find_match() {
+        while (!right_->is_end()) {
+            while (left_pos_ >= 0) {
+                auto rec = join_record();
+                if (eval_conds(cols_, fed_conds_, rec.get())) {
+                    return;
+                }
+                --left_pos_;
+            }
+            // 内层表扫描完毕，外层表前进一行，内层表重置
+            right_->nextTuple();
+            left_pos_ = (int)left_buf_.size() - 1;
+        }
+        isend = true;
+    }
 };

@@ -53,4 +53,67 @@ class AbstractExecutor {
         }
         return pos;
     }
+
+    /* 比较两个同类型的原始字节串，返回 <0 / 0 / >0 */
+    static int compare_value(const char *lhs, const char *rhs, ColType type, int len) {
+        switch (type) {
+            case TYPE_INT: {
+                int a = *(const int *)lhs;
+                int b = *(const int *)rhs;
+                return (a < b) ? -1 : (a > b ? 1 : 0);
+            }
+            case TYPE_BIGINT: {
+                int64_t a = *(const int64_t *)lhs;
+                int64_t b = *(const int64_t *)rhs;
+                return (a < b) ? -1 : (a > b ? 1 : 0);
+            }
+            case TYPE_FLOAT: {
+                float a = *(const float *)lhs;
+                float b = *(const float *)rhs;
+                return (a < b) ? -1 : (a > b ? 1 : 0);
+            }
+            case TYPE_STRING:
+                return memcmp(lhs, rhs, len);
+            default:
+                return 0;
+        }
+    }
+
+    /* 根据比较结果和比较运算符判断条件是否成立 */
+    static bool eval_compare(int cmp, CompOp op) {
+        switch (op) {
+            case OP_EQ: return cmp == 0;
+            case OP_NE: return cmp != 0;
+            case OP_LT: return cmp < 0;
+            case OP_GT: return cmp > 0;
+            case OP_LE: return cmp <= 0;
+            case OP_GE: return cmp >= 0;
+            default: return false;
+        }
+    }
+
+    /* 判断一条记录是否满足单个条件 */
+    bool eval_cond(const std::vector<ColMeta> &rec_cols, const Condition &cond, const RmRecord *rec) {
+        auto lhs_col = get_col(rec_cols, cond.lhs_col);
+        const char *lhs_data = rec->data + lhs_col->offset;
+        const char *rhs_data;
+        if (cond.is_rhs_val) {
+            rhs_data = cond.rhs_val.raw->data;
+        } else {
+            auto rhs_col = get_col(rec_cols, cond.rhs_col);
+            rhs_data = rec->data + rhs_col->offset;
+        }
+        int cmp = compare_value(lhs_data, rhs_data, lhs_col->type, lhs_col->len);
+        return eval_compare(cmp, cond.op);
+    }
+
+    /* 判断一条记录是否满足全部条件 */
+    bool eval_conds(const std::vector<ColMeta> &rec_cols, const std::vector<Condition> &conds, const RmRecord *rec) {
+        for (auto &cond : conds) {
+            if (!eval_cond(rec_cols, cond, rec)) {
+                return false;
+            }
+        }
+        return true;
+    }
 };

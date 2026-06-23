@@ -85,7 +85,27 @@ void SmManager::drop_db(const std::string& db_name) {
  * @param {string&} db_name 数据库名称，与文件夹同名
  */
 void SmManager::open_db(const std::string& db_name) {
-    
+    if (!is_dir(db_name)) {
+        throw DatabaseNotFoundError(db_name);
+    }
+    // 进入数据库目录
+    if (chdir(db_name.c_str()) < 0) {
+        throw UnixError();
+    }
+    // 从db.meta文件中读取数据库元数据
+    std::ifstream ifs(DB_META_NAME);
+    ifs >> db_;
+    ifs.close();
+
+    // 打开每张表的数据文件以及其上建立的索引文件
+    for (auto &entry : db_.tabs_) {
+        auto &tab = entry.second;
+        fhs_.emplace(tab.name, rm_manager_->open_file(tab.name));
+        for (auto &index : tab.indexes) {
+            auto index_name = ix_manager_->get_index_name(tab.name, index.cols);
+            ihs_.emplace(index_name, ix_manager_->open_index(tab.name, index.cols));
+        }
+    }
 }
 
 /**
@@ -101,7 +121,29 @@ void SmManager::flush_meta() {
  * @description: 关闭数据库并把数据落盘
  */
 void SmManager::close_db() {
-    
+    // 将元数据刷入磁盘
+    flush_meta();
+
+    // 关闭所有表的数据文件，并将缓冲区中的页面落盘
+    for (auto &entry : fhs_) {
+        rm_manager_->close_file(entry.second.get());
+    }
+    fhs_.clear();
+
+    // 关闭所有索引文件
+    for (auto &entry : ihs_) {
+        ix_manager_->close_index(entry.second.get());
+    }
+    ihs_.clear();
+
+    // 清空内存中的元数据
+    db_.name_.clear();
+    db_.tabs_.clear();
+
+    // 回到上级目录
+    if (chdir("..") < 0) {
+        throw UnixError();
+    }
 }
 
 /**
@@ -188,7 +230,33 @@ void SmManager::create_table(const std::string& tab_name, const std::vector<ColD
  * @param {Context*} context
  */
 void SmManager::drop_table(const std::string& tab_name, Context* context) {
-    
+    if (!db_.is_table(tab_name)) {
+        throw TableNotFoundError(tab_name);
+    }
+    TabMeta &tab = db_.get_table(tab_name);
+
+    // 删除该表上的所有索引文件
+    for (auto &index : tab.indexes) {
+        auto index_name = ix_manager_->get_index_name(tab_name, index.cols);
+        auto ih_pos = ihs_.find(index_name);
+        if (ih_pos != ihs_.end()) {
+            ix_manager_->close_index(ih_pos->second.get());
+            ihs_.erase(ih_pos);
+        }
+        ix_manager_->destroy_index(tab_name, index.cols);
+    }
+
+    // 关闭并删除该表的数据文件
+    auto fh_pos = fhs_.find(tab_name);
+    if (fh_pos != fhs_.end()) {
+        rm_manager_->close_file(fh_pos->second.get());
+        fhs_.erase(fh_pos);
+    }
+    rm_manager_->destroy_file(tab_name);
+
+    // 从元数据中删除该表并落盘
+    db_.tabs_.erase(tab_name);
+    flush_meta();
 }
 
 /**

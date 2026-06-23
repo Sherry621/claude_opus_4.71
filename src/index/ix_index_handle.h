@@ -24,6 +24,11 @@ inline int ix_compare(const char *a, const char *b, ColType type, int col_len) {
             int ib = *(int *)b;
             return (ia < ib) ? -1 : ((ia > ib) ? 1 : 0);
         }
+        case TYPE_BIGINT: {
+            int64_t ia = *(int64_t *)a;
+            int64_t ib = *(int64_t *)b;
+            return (ia < ib) ? -1 : ((ia > ib) ? 1 : 0);
+        }
         case TYPE_FLOAT: {
             float fa = *(float *)a;
             float fb = *(float *)b;

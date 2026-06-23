@@ -38,7 +38,58 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
-        
+        // 预先为每个set子句的右值生成原始字节串
+        for (auto &set : set_clauses_) {
+            auto col = tab_.get_col(set.lhs.col_name);
+            // 必要时进行隐式类型转换（int->bigint/float, bigint->int等）
+            if (set.rhs.type != col->type) {
+                if (!set.rhs.cast_to(col->type)) {
+                    throw IncompatibleTypeError(coltype2str(col->type), coltype2str(set.rhs.type));
+                }
+            }
+            if (set.rhs.raw == nullptr) {
+                set.rhs.init_raw(col->len);
+            }
+        }
+
+        for (auto &rid : rids_) {
+            auto rec = fh_->get_record(rid, context_);
+
+            // 删除旧记录在各索引上的条目
+            for (auto &index : tab_.indexes) {
+                auto ih = sm_manager_->ihs_.at(
+                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                char *key = new char[index.col_tot_len];
+                int offset = 0;
+                for (size_t i = 0; i < index.col_num; ++i) {
+                    memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                    offset += index.cols[i].len;
+                }
+                ih->delete_entry(key, context_->txn_);
+                delete[] key;
+            }
+
+            // 在记录上应用set子句
+            for (auto &set : set_clauses_) {
+                auto col = tab_.get_col(set.lhs.col_name);
+                memcpy(rec->data + col->offset, set.rhs.raw->data, col->len);
+            }
+            fh_->update_record(rid, rec->data, context_);
+
+            // 插入更新后记录在各索引上的条目
+            for (auto &index : tab_.indexes) {
+                auto ih = sm_manager_->ihs_.at(
+                    sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+                char *key = new char[index.col_tot_len];
+                int offset = 0;
+                for (size_t i = 0; i < index.col_num; ++i) {
+                    memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                    offset += index.cols[i].len;
+                }
+                ih->insert_entry(key, rid, context_->txn_);
+                delete[] key;
+            }
+        }
         return nullptr;
     }
 

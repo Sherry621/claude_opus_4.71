@@ -12,6 +12,8 @@ See the Mulan PSL v2 for more details. */
 
 #include <cassert>
 #include <cstring>
+#include <cstdint>
+#include <climits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -31,8 +33,9 @@ struct TabCol {
 struct Value {
     ColType type;  // type of value
     union {
-        int int_val;      // int value
-        float float_val;  // float value
+        int int_val;            // int value
+        float float_val;        // float value
+        int64_t bigint_val;     // bigint value (8字节有符号整数)
     };
     std::string str_val;  // string value
 
@@ -48,9 +51,44 @@ struct Value {
         float_val = float_val_;
     }
 
+    void set_bigint(int64_t bigint_val_) {
+        type = TYPE_BIGINT;
+        bigint_val = bigint_val_;
+    }
+
     void set_str(std::string str_val_) {
         type = TYPE_STRING;
         str_val = std::move(str_val_);
+    }
+
+    /**
+     * @description: 将当前值转换为目标列类型，必要时进行隐式类型转换
+     * @return {bool} 转换是否成功（超出目标类型范围时返回false）
+     */
+    bool cast_to(ColType target) {
+        if (type == target) {
+            return true;
+        }
+        if (target == TYPE_BIGINT && type == TYPE_INT) {
+            set_bigint((int64_t)int_val);
+            return true;
+        }
+        if (target == TYPE_INT && type == TYPE_BIGINT) {
+            if (bigint_val < INT_MIN || bigint_val > INT_MAX) {
+                return false;  // 超出INT范围
+            }
+            set_int((int)bigint_val);
+            return true;
+        }
+        if (target == TYPE_FLOAT && type == TYPE_INT) {
+            set_float((float)int_val);
+            return true;
+        }
+        if (target == TYPE_FLOAT && type == TYPE_BIGINT) {
+            set_float((float)bigint_val);
+            return true;
+        }
+        return false;
     }
 
     void init_raw(int len) {
@@ -59,6 +97,9 @@ struct Value {
         if (type == TYPE_INT) {
             assert(len == sizeof(int));
             *(int *)(raw->data) = int_val;
+        } else if (type == TYPE_BIGINT) {
+            assert(len == sizeof(int64_t));
+            *(int64_t *)(raw->data) = bigint_val;
         } else if (type == TYPE_FLOAT) {
             assert(len == sizeof(float));
             *(float *)(raw->data) = float_val;
