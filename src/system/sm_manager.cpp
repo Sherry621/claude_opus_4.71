@@ -266,7 +266,56 @@ void SmManager::drop_table(const std::string& tab_name, Context* context) {
  * @param {Context*} context
  */
 void SmManager::create_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context) {
-    
+    TabMeta &tab = db_.get_table(tab_name);  // 表不存在则抛异常
+    // 索引已存在则报错
+    if (tab.is_index(col_names)) {
+        throw IndexExistsError(tab_name, col_names);
+    }
+    // 收集索引字段元数据
+    std::vector<ColMeta> index_cols;
+    int col_tot_len = 0;
+    for (auto &col_name : col_names) {
+        auto col = tab.get_col(col_name);  // 字段不存在则抛异常
+        index_cols.push_back(*col);
+        col_tot_len += col->len;
+    }
+
+    // 创建并打开索引文件
+    ix_manager_->create_index(tab_name, index_cols);
+    auto ih = ix_manager_->open_index(tab_name, index_cols);
+    auto fh = fhs_.at(tab_name).get();
+
+    // 扫描基表所有记录，逐条插入索引，并检查唯一性约束
+    char *key = new char[col_tot_len];
+    for (RmScan rm_scan(fh); !rm_scan.is_end(); rm_scan.next()) {
+        auto rec = fh->get_record(rm_scan.rid(), context);
+        int offset = 0;
+        for (auto &col : index_cols) {
+            memcpy(key + offset, rec->data + col.offset, col.len);
+            offset += col.len;
+        }
+        std::vector<Rid> dup;
+        if (ih->get_value(key, &dup, context ? context->txn_ : nullptr)) {
+            // 存在重复值，违反唯一性约束，清理后报错
+            delete[] key;
+            ix_manager_->close_index(ih.get());
+            ix_manager_->destroy_index(tab_name, index_cols);
+            throw RMDBError("duplicate value violates unique index on " + tab_name);
+        }
+        ih->insert_entry(key, rm_scan.rid(), context ? context->txn_ : nullptr);
+    }
+    delete[] key;
+
+    // 注册索引元数据并保存索引句柄
+    IndexMeta index_meta;
+    index_meta.tab_name = tab_name;
+    index_meta.col_tot_len = col_tot_len;
+    index_meta.col_num = (int)index_cols.size();
+    index_meta.cols = index_cols;
+    tab.indexes.push_back(index_meta);
+    ihs_.emplace(ix_manager_->get_index_name(tab_name, index_cols), std::move(ih));
+
+    flush_meta();
 }
 
 /**
@@ -276,7 +325,24 @@ void SmManager::create_index(const std::string& tab_name, const std::vector<std:
  * @param {Context*} context
  */
 void SmManager::drop_index(const std::string& tab_name, const std::vector<std::string>& col_names, Context* context) {
-    
+    TabMeta &tab = db_.get_table(tab_name);  // 表不存在则抛异常
+    if (!tab.is_index(col_names)) {
+        throw IndexNotFoundError(tab_name, col_names);
+    }
+    auto index_meta = tab.get_index_meta(col_names);
+    auto index_name = ix_manager_->get_index_name(tab_name, index_meta->cols);
+
+    // 关闭并销毁索引文件
+    auto ih_pos = ihs_.find(index_name);
+    if (ih_pos != ihs_.end()) {
+        ix_manager_->close_index(ih_pos->second.get());
+        ihs_.erase(ih_pos);
+    }
+    ix_manager_->destroy_index(tab_name, index_meta->cols);
+
+    // 从表元数据中删除该索引并落盘
+    tab.indexes.erase(index_meta);
+    flush_meta();
 }
 
 /**
@@ -286,5 +352,33 @@ void SmManager::drop_index(const std::string& tab_name, const std::vector<std::s
  * @param {Context*} context
  */
 void SmManager::drop_index(const std::string& tab_name, const std::vector<ColMeta>& cols, Context* context) {
-    
+    std::vector<std::string> col_names;
+    for (auto &col : cols) {
+        col_names.push_back(col.name);
+    }
+    drop_index(tab_name, col_names, context);
+}
+
+/**
+ * @description: 显示某张表上的索引信息，输出格式为 | table_name | unique | (col,col) |
+ * @param {string&} tab_name 表名称
+ * @param {Context*} context
+ */
+void SmManager::show_index(const std::string& tab_name, Context* context) {
+    TabMeta &tab = db_.get_table(tab_name);  // 表不存在则抛异常 -> failure
+
+    std::fstream outfile;
+    outfile.open("output.txt", std::ios::out | std::ios::app);
+    RecordPrinter printer(3);
+    for (auto &index : tab.indexes) {
+        std::string cols_str = "(";
+        for (size_t i = 0; i < index.cols.size(); ++i) {
+            if (i > 0) cols_str += ",";  // 注意逗号后不加空格
+            cols_str += index.cols[i].name;
+        }
+        cols_str += ")";
+        outfile << "| " << tab_name << " | unique | " << cols_str << " |\n";
+        printer.print_record({tab_name, "unique", cols_str}, context);
+    }
+    outfile.close();
 }

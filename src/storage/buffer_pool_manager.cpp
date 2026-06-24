@@ -211,3 +211,26 @@ void BufferPoolManager::flush_all_pages(int fd) {
         }
     }
 }
+
+/**
+ * @description: 将指定fd对应文件的所有页面从缓冲池中删除（落盘后回收帧），
+ * 防止文件关闭后fd被复用时读到旧文件的脏页缓存
+ * @param {int} fd 文件句柄
+ */
+void BufferPoolManager::delete_all_pages(int fd) {
+    std::scoped_lock lock{latch_};
+    for (size_t i = 0; i < pool_size_; i++) {
+        Page *page = &pages_[i];
+        if (page->get_page_id().fd == fd && page->get_page_id().page_no != INVALID_PAGE_ID) {
+            if (page->is_dirty_) {
+                disk_manager_->write_page(page->get_page_id().fd, page->get_page_id().page_no, page->get_data(), PAGE_SIZE);
+                page->is_dirty_ = false;
+            }
+            page_table_.erase(page->get_page_id());
+            page->id_ = {-1, INVALID_PAGE_ID};
+            page->pin_count_ = 0;
+            page->reset_memory();
+            free_list_.push_back(static_cast<frame_id_t>(i));
+        }
+    }
+}

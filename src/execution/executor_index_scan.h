@@ -10,6 +10,10 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <climits>
+#include <cfloat>
+#include <cstdint>
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -64,17 +68,106 @@ class IndexScanExecutor : public AbstractExecutor {
         fed_conds_ = conds_;
     }
 
+    size_t tupleLen() const override { return len_; }
+
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+
+    std::string getType() override { return "IndexScanExecutor"; }
+
+    ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
+
     void beginTuple() override {
-        
+        auto ih = sm_manager_->ihs_.at(
+            sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols)).get();
+
+        int tot = index_meta_.col_tot_len;
+        std::vector<char> low(tot), high(tot);
+        bool low_inclusive = true, high_inclusive = true;
+        bool prefix_open = true;
+        int koff = 0;
+        for (auto &icol : index_meta_.cols) {
+            set_min(low.data() + koff, icol.type, icol.len);
+            set_max(high.data() + koff, icol.type, icol.len);
+            if (prefix_open) {
+                bool has_eq = false, has_lo = false, has_hi = false, lo_inc = false, hi_inc = false;
+                const char *eqv = nullptr, *lov = nullptr, *hiv = nullptr;
+                for (auto &cond : conds_) {
+                    if (!cond.is_rhs_val || cond.lhs_col.col_name != icol.name) continue;
+                    const char *v = cond.rhs_val.raw->data;
+                    switch (cond.op) {
+                        case OP_EQ: has_eq = true; eqv = v; break;
+                        case OP_GT: has_lo = true; lo_inc = false; lov = v; break;
+                        case OP_GE: has_lo = true; lo_inc = true; lov = v; break;
+                        case OP_LT: has_hi = true; hi_inc = false; hiv = v; break;
+                        case OP_LE: has_hi = true; hi_inc = true; hiv = v; break;
+                        default: break;
+                    }
+                }
+                if (has_eq) {
+                    memcpy(low.data() + koff, eqv, icol.len);
+                    memcpy(high.data() + koff, eqv, icol.len);
+                } else if (has_lo || has_hi) {
+                    if (has_lo) { memcpy(low.data() + koff, lov, icol.len); low_inclusive = lo_inc; }
+                    if (has_hi) { memcpy(high.data() + koff, hiv, icol.len); high_inclusive = hi_inc; }
+                    prefix_open = false;  // 范围条件后停止扩展前缀
+                } else {
+                    prefix_open = false;  // 该列无条件，停止
+                }
+            }
+            koff += icol.len;
+        }
+
+        Iid lower = low_inclusive ? ih->lower_bound(low.data()) : ih->upper_bound(low.data());
+        Iid upper = high_inclusive ? ih->upper_bound(high.data()) : ih->lower_bound(high.data());
+        scan_ = std::make_unique<IxScan>(ih, lower, upper, sm_manager_->get_bpm());
+        find_next_valid();
     }
 
     void nextTuple() override {
-        
+        scan_->next();
+        find_next_valid();
     }
 
+    bool is_end() const override { return scan_->is_end(); }
+
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        return fh_->get_record(rid_, context_);
     }
 
     Rid &rid() override { return rid_; }
+
+   private:
+    // 从当前scan位置向后寻找第一条满足全部条件的记录
+    void find_next_valid() {
+        while (!scan_->is_end()) {
+            rid_ = scan_->rid();
+            auto rec = fh_->get_record(rid_, context_);
+            if (eval_conds(cols_, fed_conds_, rec.get())) {
+                return;
+            }
+            scan_->next();
+        }
+    }
+
+    static void set_min(char *p, ColType t, int len) {
+        switch (t) {
+            case TYPE_INT: *(int *)p = INT_MIN; break;
+            case TYPE_BIGINT:
+            case TYPE_DATETIME: *(int64_t *)p = INT64_MIN; break;
+            case TYPE_FLOAT: *(float *)p = -FLT_MAX; break;
+            case TYPE_STRING: memset(p, 0, len); break;
+            default: break;
+        }
+    }
+
+    static void set_max(char *p, ColType t, int len) {
+        switch (t) {
+            case TYPE_INT: *(int *)p = INT_MAX; break;
+            case TYPE_BIGINT:
+            case TYPE_DATETIME: *(int64_t *)p = INT64_MAX; break;
+            case TYPE_FLOAT: *(float *)p = FLT_MAX; break;
+            case TYPE_STRING: memset(p, (char)0xff, len); break;
+            default: break;
+        }
+    }
 };

@@ -52,9 +52,27 @@ class InsertExecutor : public AbstractExecutor {
             val.init_raw(col.len);
             memcpy(rec.data + col.offset, val.raw->data, col.len);
         }
+        // 先检查唯一性约束：任一索引上若已存在相同key则报错（不插入任何数据）
+        for (size_t i = 0; i < tab_.indexes.size(); ++i) {
+            auto &index = tab_.indexes[i];
+            auto ih = sm_manager_->ihs_.at(sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+            char *key = new char[index.col_tot_len];
+            int offset = 0;
+            for (size_t j = 0; j < index.col_num; ++j) {
+                memcpy(key + offset, rec.data + index.cols[j].offset, index.cols[j].len);
+                offset += index.cols[j].len;
+            }
+            std::vector<Rid> dup;
+            bool exists = ih->get_value(key, &dup, context_->txn_);
+            delete[] key;
+            if (exists) {
+                throw RMDBError("duplicate value violates unique index on " + tab_name_);
+            }
+        }
+
         // Insert into record file
         rid_ = fh_->insert_record(rec.data, context_);
-        
+
         // Insert into index
         for(size_t i = 0; i < tab_.indexes.size(); ++i) {
             auto& index = tab_.indexes[i];
@@ -66,6 +84,7 @@ class InsertExecutor : public AbstractExecutor {
                 offset += index.cols[i].len;
             }
             ih->insert_entry(key, rid_, context_->txn_);
+            delete[] key;
         }
         return nullptr;
     }

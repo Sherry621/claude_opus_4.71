@@ -9,6 +9,9 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #pragma once
+#include <set>
+#include <string>
+
 #include "execution_defs.h"
 #include "execution_manager.h"
 #include "executor_abstract.h"
@@ -49,6 +52,43 @@ class UpdateExecutor : public AbstractExecutor {
             }
             if (set.rhs.raw == nullptr) {
                 set.rhs.init_raw(col->len);
+            }
+        }
+
+        // 唯一性约束预检查：先计算每条记录更新后的索引key，检查是否与其他记录冲突
+        for (auto &index : tab_.indexes) {
+            auto ih = sm_manager_->ihs_.at(
+                sm_manager_->get_ix_manager()->get_index_name(tab_name_, index.cols)).get();
+            std::set<std::string> seen;
+            for (auto &rid : rids_) {
+                auto rec = fh_->get_record(rid, context_);
+                // 应用set子句得到新记录
+                for (auto &set : set_clauses_) {
+                    auto col = tab_.get_col(set.lhs.col_name);
+                    memcpy(rec->data + col->offset, set.rhs.raw->data, col->len);
+                }
+                std::string new_key(index.col_tot_len, '\0');
+                int offset = 0;
+                for (size_t i = 0; i < index.col_num; ++i) {
+                    memcpy(&new_key[0] + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                    offset += index.cols[i].len;
+                }
+                // 与本批次中其他被更新记录冲突
+                if (seen.count(new_key)) {
+                    throw RMDBError("duplicate value violates unique index on " + tab_name_);
+                }
+                seen.insert(new_key);
+                // 与索引中已有的、不属于本批次的记录冲突
+                std::vector<Rid> found;
+                if (ih->get_value(new_key.data(), &found, context_->txn_)) {
+                    bool self = false;
+                    for (auto &r : rids_) {
+                        if (r == found[0]) { self = true; break; }
+                    }
+                    if (!self) {
+                        throw RMDBError("duplicate value violates unique index on " + tab_name_);
+                    }
+                }
             }
         }
 
