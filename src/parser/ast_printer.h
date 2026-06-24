@@ -47,6 +47,7 @@ private:
                 {SV_TYPE_FLOAT,  "FLOAT"},
                 {SV_TYPE_STRING, "STRING"},
                 {SV_TYPE_BIGINT, "BIGINT"},
+                {SV_TYPE_DATETIME, "DATETIME"},
         };
         return m.at(type);
     }

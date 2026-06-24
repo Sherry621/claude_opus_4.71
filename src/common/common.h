@@ -13,6 +13,7 @@ See the Mulan PSL v2 for more details. */
 #include <cassert>
 #include <cstring>
 #include <cstdint>
+#include <cstdio>
 #include <climits>
 #include <memory>
 #include <string>
@@ -29,6 +30,55 @@ struct TabCol {
         return std::make_pair(x.tab_name, x.col_name) < std::make_pair(y.tab_name, y.col_name);
     }
 };
+
+/**
+ * @description: 解析并校验 'YYYY-MM-DD HH:MM:SS' 格式的时间字符串
+ * @return {bool} 是否为合法时间；合法时通过out返回编码后的int64值(YYYYMMDDHHMMSS)
+ * 取值范围 '1000-01-01 00:00:00' ~ '9999-12-31 23:59:59'
+ */
+inline bool parse_datetime(const std::string &s, int64_t &out) {
+    if (s.size() != 19) return false;  // 字段长度必须严格为19
+    auto is_digit = [](char c) { return c >= '0' && c <= '9'; };
+    // 分隔符位置校验
+    if (s[4] != '-' || s[7] != '-' || s[10] != ' ' || s[13] != ':' || s[16] != ':') return false;
+    // 数字位置校验（同时排除负号等非法字符）
+    const int digit_pos[] = {0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18};
+    for (int p : digit_pos) {
+        if (!is_digit(s[p])) return false;
+    }
+    int year = (s[0]-'0')*1000 + (s[1]-'0')*100 + (s[2]-'0')*10 + (s[3]-'0');
+    int month = (s[5]-'0')*10 + (s[6]-'0');
+    int day = (s[8]-'0')*10 + (s[9]-'0');
+    int hour = (s[11]-'0')*10 + (s[12]-'0');
+    int minute = (s[14]-'0')*10 + (s[15]-'0');
+    int second = (s[17]-'0')*10 + (s[18]-'0');
+    if (year < 1000 || year > 9999) return false;
+    if (month < 1 || month > 12) return false;
+    if (hour > 23) return false;
+    if (minute > 59) return false;
+    if (second > 59) return false;
+    static const int month_days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    int dim = month_days[month - 1];
+    bool leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    if (month == 2 && leap) dim = 29;
+    if (day < 1 || day > dim) return false;
+    out = ((((int64_t)year * 100 + month) * 100 + day) * 100 + hour) * 100 + minute;
+    out = out * 100 + second;
+    return true;
+}
+
+/* 将编码后的datetime(int64)还原为 'YYYY-MM-DD HH:MM:SS' 字符串 */
+inline std::string datetime_to_str(int64_t v) {
+    int second = (int)(v % 100); v /= 100;
+    int minute = (int)(v % 100); v /= 100;
+    int hour = (int)(v % 100); v /= 100;
+    int day = (int)(v % 100); v /= 100;
+    int month = (int)(v % 100); v /= 100;
+    int year = (int)v;
+    char buf[20];
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, minute, second);
+    return std::string(buf);
+}
 
 struct Value {
     ColType type;  // type of value
@@ -54,6 +104,11 @@ struct Value {
     void set_bigint(int64_t bigint_val_) {
         type = TYPE_BIGINT;
         bigint_val = bigint_val_;
+    }
+
+    void set_datetime(int64_t datetime_val_) {
+        type = TYPE_DATETIME;
+        bigint_val = datetime_val_;  // datetime编码后的int64复用bigint_val槽位
     }
 
     void set_str(std::string str_val_) {
@@ -88,6 +143,14 @@ struct Value {
             set_float((float)bigint_val);
             return true;
         }
+        if (target == TYPE_DATETIME && type == TYPE_STRING) {
+            int64_t dt;
+            if (!parse_datetime(str_val, dt)) {
+                return false;  // 非法时间字符串
+            }
+            set_datetime(dt);
+            return true;
+        }
         return false;
     }
 
@@ -97,7 +160,7 @@ struct Value {
         if (type == TYPE_INT) {
             assert(len == sizeof(int));
             *(int *)(raw->data) = int_val;
-        } else if (type == TYPE_BIGINT) {
+        } else if (type == TYPE_BIGINT || type == TYPE_DATETIME) {
             assert(len == sizeof(int64_t));
             *(int64_t *)(raw->data) = bigint_val;
         } else if (type == TYPE_FLOAT) {

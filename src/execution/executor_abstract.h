@@ -62,7 +62,8 @@ class AbstractExecutor {
                 int b = *(const int *)rhs;
                 return (a < b) ? -1 : (a > b ? 1 : 0);
             }
-            case TYPE_BIGINT: {
+            case TYPE_BIGINT:
+            case TYPE_DATETIME: {
                 int64_t a = *(const int64_t *)lhs;
                 int64_t b = *(const int64_t *)rhs;
                 return (a < b) ? -1 : (a > b ? 1 : 0);
