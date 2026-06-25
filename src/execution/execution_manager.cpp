@@ -154,7 +154,8 @@ void QlManager::select_from(std::unique_ptr<AbstractExecutor> executorTreeRoot, 
     std::vector<std::string> captions;
     captions.reserve(sel_cols.size());
     for (auto &sel_col : sel_cols) {
-        captions.push_back(sel_col.col_name);
+        // 聚合等带别名的列使用别名作为表头
+        captions.push_back(sel_col.alias.empty() ? sel_col.col_name : sel_col.alias);
     }
 
     // Print header into buffer

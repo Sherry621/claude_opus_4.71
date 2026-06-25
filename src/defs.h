@@ -43,6 +43,11 @@ enum ColType {
     TYPE_INT, TYPE_FLOAT, TYPE_STRING, TYPE_BIGINT, TYPE_DATETIME
 };
 
+// 聚合函数类型
+enum AggType {
+    AGG_NONE = 0, AGG_COUNT, AGG_MAX, AGG_MIN, AGG_SUM
+};
+
 inline std::string coltype2str(ColType type) {
     std::map<ColType, std::string> m = {
             {TYPE_INT,      "INT"},

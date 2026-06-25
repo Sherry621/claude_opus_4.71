@@ -43,7 +43,9 @@ typedef enum PlanTag{
     T_NestLoop,
     T_SortMerge,    // sort merge join
     T_Sort,
-    T_Projection
+    T_Projection,
+    T_Aggregate,
+    T_Limit
 } PlanTag;
 
 // 查询执行计划
@@ -117,21 +119,48 @@ class ProjectionPlan : public Plan
         
 };
 
-class SortPlan : public Plan
+class AggregatePlan : public Plan
 {
     public:
-        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, TabCol sel_col, bool is_desc)
+        AggregatePlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<TabCol> sel_cols)
         {
             Plan::tag = tag;
             subplan_ = std::move(subplan);
-            sel_col_ = sel_col;
-            is_desc_ = is_desc;
+            sel_cols_ = std::move(sel_cols);
+        }
+        ~AggregatePlan(){}
+        std::shared_ptr<Plan> subplan_;
+        std::vector<TabCol> sel_cols_;
+};
+
+class SortPlan : public Plan
+{
+    public:
+        SortPlan(PlanTag tag, std::shared_ptr<Plan> subplan, std::vector<TabCol> sel_cols, std::vector<bool> is_desc)
+        {
+            Plan::tag = tag;
+            subplan_ = std::move(subplan);
+            sel_cols_ = std::move(sel_cols);
+            is_desc_ = std::move(is_desc);
         }
         ~SortPlan(){}
         std::shared_ptr<Plan> subplan_;
-        TabCol sel_col_;
-        bool is_desc_;
-        
+        std::vector<TabCol> sel_cols_;   // 排序键（支持多列）
+        std::vector<bool> is_desc_;      // 每个排序键是否降序
+};
+
+class LimitPlan : public Plan
+{
+    public:
+        LimitPlan(PlanTag tag, std::shared_ptr<Plan> subplan, int limit)
+        {
+            Plan::tag = tag;
+            subplan_ = std::move(subplan);
+            limit_ = limit;
+        }
+        ~LimitPlan(){}
+        std::shared_ptr<Plan> subplan_;
+        int limit_;
 };
 
 // dml语句，包括insert; delete; update; select语句　

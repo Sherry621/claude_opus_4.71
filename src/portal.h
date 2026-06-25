@@ -23,6 +23,8 @@ See the Mulan PSL v2 for more details. */
 #include "execution/executor_insert.h"
 #include "execution/executor_delete.h"
 #include "execution/execution_sort.h"
+#include "execution/executor_aggregate.h"
+#include "execution/executor_limit.h"
 #include "common/common.h"
 
 typedef enum portalTag{
@@ -69,9 +71,23 @@ class Portal
             switch(x->tag) {
                 case T_select:
                 {
-                    std::shared_ptr<ProjectionPlan> p = std::dynamic_pointer_cast<ProjectionPlan>(x->subplan_);
-                    std::unique_ptr<AbstractExecutor> root= convert_plan_executor(p, context);
-                    return std::make_shared<PortalStmt>(PORTAL_ONE_SELECT, std::move(p->sel_cols_), std::move(root), plan);
+                    std::shared_ptr<Plan> sub = x->subplan_;
+                    int limit = -1;
+                    if (auto l = std::dynamic_pointer_cast<LimitPlan>(sub)) {
+                        limit = l->limit_;
+                        sub = l->subplan_;
+                    }
+                    std::vector<TabCol> sel_cols;
+                    if (auto p = std::dynamic_pointer_cast<ProjectionPlan>(sub)) {
+                        sel_cols = p->sel_cols_;
+                    } else if (auto a = std::dynamic_pointer_cast<AggregatePlan>(sub)) {
+                        sel_cols = a->sel_cols_;
+                    }
+                    std::unique_ptr<AbstractExecutor> root = convert_plan_executor(sub, context);
+                    if (limit >= 0) {
+                        root = std::make_unique<LimitExecutor>(std::move(root), limit);
+                    }
+                    return std::make_shared<PortalStmt>(PORTAL_ONE_SELECT, std::move(sel_cols), std::move(root), plan);
                 }
                     
                 case T_Update:
@@ -156,7 +172,10 @@ class Portal
     std::unique_ptr<AbstractExecutor> convert_plan_executor(std::shared_ptr<Plan> plan, Context *context)
     {
         if(auto x = std::dynamic_pointer_cast<ProjectionPlan>(plan)){
-            return std::make_unique<ProjectionExecutor>(convert_plan_executor(x->subplan_, context), 
+            return std::make_unique<ProjectionExecutor>(convert_plan_executor(x->subplan_, context),
+                                                        x->sel_cols_);
+        } else if(auto x = std::dynamic_pointer_cast<AggregatePlan>(plan)){
+            return std::make_unique<AggregateExecutor>(convert_plan_executor(x->subplan_, context),
                                                         x->sel_cols_);
         } else if(auto x = std::dynamic_pointer_cast<ScanPlan>(plan)) {
             if(x->tag == T_SeqScan) {
@@ -173,8 +192,8 @@ class Portal
                                 std::move(right), std::move(x->conds_));
             return join;
         } else if(auto x = std::dynamic_pointer_cast<SortPlan>(plan)) {
-            return std::make_unique<SortExecutor>(convert_plan_executor(x->subplan_, context), 
-                                            x->sel_col_, x->is_desc_);
+            return std::make_unique<SortExecutor>(convert_plan_executor(x->subplan_, context),
+                                            x->sel_cols_, x->is_desc_);
         }
         return nullptr;
     }

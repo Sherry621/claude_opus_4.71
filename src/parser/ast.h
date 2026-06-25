@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include <cstdint>
 #include <cstdlib>
 #include <cerrno>
+#include "defs.h"
 
 enum JoinType {
     INNER_JOIN, LEFT_JOIN, RIGHT_JOIN, FULL_JOIN
@@ -167,6 +168,9 @@ struct BoolLit : public Value {
 struct Col : public Expr {
     std::string tab_name;
     std::string col_name;
+    AggType agg_type = AGG_NONE;   // 聚合类型
+    std::string alias;             // as别名
+    bool is_star = false;          // 是否为 COUNT(*)
 
     Col(std::string tab_name_, std::string col_name_) :
             tab_name(std::move(tab_name_)), col_name(std::move(col_name_)) {}
@@ -191,10 +195,9 @@ struct BinaryExpr : public TreeNode {
 
 struct OrderBy : public TreeNode
 {
-    std::shared_ptr<Col> cols;
-    OrderByDir orderby_dir;
-    OrderBy( std::shared_ptr<Col> cols_, OrderByDir orderby_dir_) :
-       cols(std::move(cols_)), orderby_dir(std::move(orderby_dir_)) {}
+    std::vector<std::shared_ptr<Col>> cols;   // 排序列（支持多列）
+    std::vector<OrderByDir> dirs;             // 每列的排序方向
+    OrderBy() {}
 };
 
 struct InsertStmt : public TreeNode {
@@ -244,13 +247,14 @@ struct SelectStmt : public TreeNode {
     
     bool has_sort;
     std::shared_ptr<OrderBy> order;
+    int limit = -1;   // LIMIT 子句，-1表示无限制
 
 
     SelectStmt(std::vector<std::shared_ptr<Col>> cols_,
                std::vector<std::string> tabs_,
                std::vector<std::shared_ptr<BinaryExpr>> conds_,
                std::shared_ptr<OrderBy> order_) :
-            cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)), 
+            cols(std::move(cols_)), tabs(std::move(tabs_)), conds(std::move(conds_)),
             order(std::move(order_)) {
                 has_sort = (bool)order;
             }

@@ -300,13 +300,22 @@ std::shared_ptr<Plan> Planner::generate_sort_plan(std::shared_ptr<Query> query, 
         const auto &sel_tab_cols = sm_manager_->db_.get_table(sel_tab_name).cols;
         all_cols.insert(all_cols.end(), sel_tab_cols.begin(), sel_tab_cols.end());
     }
-    TabCol sel_col;
-    for (auto &col : all_cols) {
-        if(col.name.compare(x->order->cols->col_name) == 0 )
-        sel_col = {.tab_name = col.tab_name, .col_name = col.name};
+    // 解析多列排序键
+    std::vector<TabCol> sort_cols;
+    std::vector<bool> is_desc;
+    for (size_t i = 0; i < x->order->cols.size(); ++i) {
+        auto &oc = x->order->cols[i];
+        TabCol sel_col;
+        for (auto &col : all_cols) {
+            if (col.name == oc->col_name && (oc->tab_name.empty() || col.tab_name == oc->tab_name)) {
+                sel_col = {.tab_name = col.tab_name, .col_name = col.name};
+                break;
+            }
+        }
+        sort_cols.push_back(sel_col);
+        is_desc.push_back(x->order->dirs[i] == ast::OrderBy_DESC);
     }
-    return std::make_shared<SortPlan>(T_Sort, std::move(plan), sel_col, 
-                                    x->order->orderby_dir == ast::OrderBy_DESC);
+    return std::make_shared<SortPlan>(T_Sort, std::move(plan), std::move(sort_cols), std::move(is_desc));
 }
 
 
@@ -324,8 +333,29 @@ std::shared_ptr<Plan> Planner::generate_select_plan(std::shared_ptr<Query> query
     //物理优化
     auto sel_cols = query->cols;
     std::shared_ptr<Plan> plannerRoot = physical_optimization(query, context);
-    plannerRoot = std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot), 
+
+    // 若选择列表中含有聚合函数，则使用聚合算子，否则使用投影算子
+    bool has_agg = false;
+    for (auto &col : sel_cols) {
+        if (col.agg_type != AGG_NONE) {
+            has_agg = true;
+            break;
+        }
+    }
+    if (has_agg) {
+        plannerRoot = std::make_shared<AggregatePlan>(T_Aggregate, std::move(plannerRoot),
                                                         std::move(sel_cols));
+    } else {
+        plannerRoot = std::make_shared<ProjectionPlan>(T_Projection, std::move(plannerRoot),
+                                                        std::move(sel_cols));
+    }
+
+    // 处理LIMIT
+    if (auto x = std::dynamic_pointer_cast<ast::SelectStmt>(query->parse)) {
+        if (x->limit >= 0) {
+            plannerRoot = std::make_shared<LimitPlan>(T_Limit, std::move(plannerRoot), x->limit);
+        }
+    }
 
     return plannerRoot;
 }

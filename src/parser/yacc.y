@@ -23,6 +23,7 @@ using namespace ast;
 // keywords
 %token SHOW TABLES CREATE TABLE DROP DESC INSERT INTO VALUES DELETE FROM ASC ORDER BY
 WHERE UPDATE SET SELECT INT BIGINT DATETIME CHAR FLOAT INDEX AND JOIN EXIT HELP TXN_BEGIN TXN_COMMIT TXN_ABORT TXN_ROLLBACK ORDER_BY ENABLE_NESTLOOP ENABLE_SORTMERGE
+COUNT SUM MAX MIN AS LIMIT
 // non-keywords
 %token LEQ NEQ GEQ T_EOF
 
@@ -43,8 +44,9 @@ WHERE UPDATE SET SELECT INT BIGINT DATETIME CHAR FLOAT INDEX AND JOIN EXIT HELP 
 %type <sv_vals> valueList
 %type <sv_str> tbName colName
 %type <sv_strs> tableList colNameList
-%type <sv_col> col
+%type <sv_col> col selectCol
 %type <sv_cols> colList selector
+%type <sv_str> as_clause
 %type <sv_set_clause> setClause
 %type <sv_set_clauses> setClauses
 %type <sv_cond> condition
@@ -52,6 +54,7 @@ WHERE UPDATE SET SELECT INT BIGINT DATETIME CHAR FLOAT INDEX AND JOIN EXIT HELP 
 %type <sv_orderby>  order_clause opt_order_clause
 %type <sv_orderby_dir> opt_asc_desc
 %type <sv_setKnobType> set_knob_type
+%type <sv_int> opt_limit
 
 %%
 start:
@@ -158,9 +161,11 @@ dml:
     {
         $$ = std::make_shared<UpdateStmt>($2, $4, $5);
     }
-    |   SELECT selector FROM tableList optWhereClause opt_order_clause
+    |   SELECT selector FROM tableList optWhereClause opt_order_clause opt_limit
     {
-        $$ = std::make_shared<SelectStmt>($2, $4, $5, $6);
+        auto sel = std::make_shared<SelectStmt>($2, $4, $5, $6);
+        sel->limit = $7;
+        $$ = sel;
     }
     ;
 
@@ -288,13 +293,60 @@ col:
     ;
 
 colList:
-        col
+        selectCol
     {
         $$ = std::vector<std::shared_ptr<Col>>{$1};
     }
-    |   colList ',' col
+    |   colList ',' selectCol
     {
         $$.push_back($3);
+    }
+    ;
+
+selectCol:
+        col
+    {
+        $$ = $1;
+    }
+    |   COUNT '(' '*' ')' as_clause
+    {
+        auto c = std::make_shared<Col>("", "*");
+        c->agg_type = AGG_COUNT;
+        c->is_star = true;
+        c->alias = $5;
+        $$ = c;
+    }
+    |   COUNT '(' col ')' as_clause
+    {
+        $3->agg_type = AGG_COUNT;
+        $3->alias = $5;
+        $$ = $3;
+    }
+    |   SUM '(' col ')' as_clause
+    {
+        $3->agg_type = AGG_SUM;
+        $3->alias = $5;
+        $$ = $3;
+    }
+    |   MAX '(' col ')' as_clause
+    {
+        $3->agg_type = AGG_MAX;
+        $3->alias = $5;
+        $$ = $3;
+    }
+    |   MIN '(' col ')' as_clause
+    {
+        $3->agg_type = AGG_MIN;
+        $3->alias = $5;
+        $$ = $3;
+    }
+    ;
+
+as_clause:
+        /* epsilon */ { $$ = std::string(); }
+    |   AS colName
+    {
+        $$ = $2;
     }
     ;
 
@@ -386,17 +438,34 @@ opt_order_clause:
     ;
 
 order_clause:
-      col  opt_asc_desc 
-    { 
-        $$ = std::make_shared<OrderBy>($1, $2);
+      col  opt_asc_desc
+    {
+        auto ob = std::make_shared<OrderBy>();
+        ob->cols.push_back($1);
+        ob->dirs.push_back($2);
+        $$ = ob;
     }
-    ;   
+    |   order_clause ',' col opt_asc_desc
+    {
+        $1->cols.push_back($3);
+        $1->dirs.push_back($4);
+        $$ = $1;
+    }
+    ;
 
 opt_asc_desc:
     ASC          { $$ = OrderBy_ASC;     }
     |  DESC      { $$ = OrderBy_DESC;    }
     |       { $$ = OrderBy_DEFAULT; }
-    ;    
+    ;
+
+opt_limit:
+        /* epsilon */ { $$ = -1; }
+    |   LIMIT VALUE_INT
+    {
+        $$ = $2;
+    }
+    ;
 
 set_knob_type:
     ENABLE_NESTLOOP { $$ = EnableNestLoop; }

@@ -25,6 +25,9 @@ See the Mulan PSL v2 for more details. */
 struct TabCol {
     std::string tab_name;
     std::string col_name;
+    AggType agg_type = AGG_NONE;   // 聚合类型
+    std::string alias;             // as别名（用于输出表头）
+    bool is_star = false;          // 是否为 COUNT(*)
 
     friend bool operator<(const TabCol &x, const TabCol &y) {
         return std::make_pair(x.tab_name, x.col_name) < std::make_pair(y.tab_name, y.col_name);
