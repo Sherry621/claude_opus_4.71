@@ -37,8 +37,12 @@ class DeleteExecutor : public AbstractExecutor {
     }
 
     std::unique_ptr<RmRecord> Next() override {
+        context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd());
         for (auto &rid : rids_) {
             auto rec = fh_->get_record(rid, context_);
+
+            // Record the delete write operation for transaction rollback
+            context_->txn_->append_write_record(new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, *rec));
 
             // 删除记录在各索引上的条目
             for (auto &index : tab_.indexes) {

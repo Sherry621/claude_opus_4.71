@@ -64,4 +64,9 @@ public:
 private:
     std::mutex latch_;      // 用于锁表的并发
     std::unordered_map<LockDataId, LockRequestQueue> lock_table_;   // 全局锁表
+
+    bool is_compatible(LockMode req, LockMode held);
+    bool is_stronger(LockMode held, LockMode req);
+    void update_group_lock_mode(LockRequestQueue& queue);
+    bool acquire_lock(Transaction* txn, const LockDataId& lock_data_id, LockMode lock_mode);
 };

@@ -77,6 +77,7 @@ class IndexScanExecutor : public AbstractExecutor {
     ColMeta get_col_offset(const TabCol &target) override { return *get_col(cols_, target); }
 
     void beginTuple() override {
+        context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd());
         auto ih = sm_manager_->ihs_.at(
             sm_manager_->get_ix_manager()->get_index_name(tab_name_, index_meta_.cols)).get();
 

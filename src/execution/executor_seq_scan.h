@@ -57,6 +57,7 @@ class SeqScanExecutor : public AbstractExecutor {
 
     // 定位到第一条满足扫描条件的记录
     void beginTuple() override {
+        context_->lock_mgr_->lock_shared_on_table(context_->txn_, fh_->GetFd());
         scan_ = std::make_unique<RmScan>(fh_);
         find_next_valid();
     }

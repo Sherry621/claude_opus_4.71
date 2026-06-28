@@ -19,14 +19,15 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
    private:
     std::unique_ptr<AbstractExecutor> left_;    // 左儿子节点（需要join的表）
     std::unique_ptr<AbstractExecutor> right_;   // 右儿子节点（需要join的表）
-    size_t len_;                                // join后获得的每条记录的长度
+    size_t len_;                                // join后获得的每条记录 of length
     std::vector<ColMeta> cols_;                 // join后获得的记录的字段
 
     std::vector<Condition> fed_conds_;          // join条件
     bool isend;
 
-    std::vector<std::unique_ptr<RmRecord>> left_buf_;   // 左表物化后的全部记录
-    int left_pos_;                                      // 当前内层（左表）记录的下标
+    std::vector<std::unique_ptr<RmRecord>> left_buffer_; // 左表（物化）的当前块的记录
+    int left_pos_;                                      // 当前块中左表记录的下标
+    std::unique_ptr<RmRecord> right_rec_;               // 当前匹配的右表记录
 
    public:
     NestedLoopJoinExecutor(std::unique_ptr<AbstractExecutor> left, std::unique_ptr<AbstractExecutor> right, 
@@ -43,7 +44,6 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         cols_.insert(cols_.end(), right_cols.begin(), right_cols.end());
         isend = false;
         fed_conds_ = std::move(conds);
-
     }
 
     size_t tupleLen() const override { return len_; }
@@ -52,16 +52,24 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
 
     std::string getType() override { return "NestedLoopJoinExecutor"; }
 
-    // 右表为外层循环，左表（物化后）为内层循环
     void beginTuple() override {
-        // 将左表的全部记录物化到缓冲区
-        left_buf_.clear();
-        for (left_->beginTuple(); !left_->is_end(); left_->nextTuple()) {
-            left_buf_.push_back(left_->Next());
-        }
-        right_->beginTuple();
-        left_pos_ = (int)left_buf_.size() - 1;
         isend = false;
+        left_->beginTuple();
+        load_next_left_block();
+        if (left_buffer_.empty()) {
+            isend = true;
+            return;
+        }
+
+        right_->beginTuple();
+        if (right_->is_end()) {
+            isend = true;
+            return;
+        }
+        
+        right_rec_ = right_->Next();
+        left_pos_ = (int)left_buffer_.size() - 1;
+        
         find_match();
     }
 
@@ -73,16 +81,29 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
     bool is_end() const override { return isend; }
 
     std::unique_ptr<RmRecord> Next() override {
-        return join_record();
+        return join_record(left_buffer_[left_pos_].get(), right_rec_.get());
     }
 
     Rid &rid() override { return _abstract_rid; }
 
    private:
+    void load_next_left_block() {
+        left_buffer_.clear();
+        size_t current_size = 0;
+        size_t max_buffer_size = 50 * 1024 * 1024; // 50MB join buffer
+        
+        while (!left_->is_end()) {
+            left_buffer_.push_back(left_->Next());
+            current_size += left_->tupleLen();
+            left_->nextTuple();
+            if (current_size >= max_buffer_size) {
+                break;
+            }
+        }
+    }
+
     // 将当前左右记录拼接成一条连接后的记录
-    std::unique_ptr<RmRecord> join_record() {
-        auto right_rec = right_->Next();
-        auto &left_rec = left_buf_[left_pos_];
+    std::unique_ptr<RmRecord> join_record(RmRecord* left_rec, RmRecord* right_rec) {
         auto rec = std::make_unique<RmRecord>(len_);
         memcpy(rec->data, left_rec->data, left_->tupleLen());
         memcpy(rec->data + left_->tupleLen(), right_rec->data, right_->tupleLen());
@@ -91,18 +112,45 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
 
     // 从当前左右位置开始，寻找下一对满足连接条件的记录
     void find_match() {
-        while (!right_->is_end()) {
-            while (left_pos_ >= 0) {
-                auto rec = join_record();
+        while (true) {
+            // Loop through the current left_buffer_ in reverse order for the current right_rec_
+            while (right_rec_ != nullptr && left_pos_ >= 0) {
+                auto rec = join_record(left_buffer_[left_pos_].get(), right_rec_.get());
                 if (eval_conds(cols_, fed_conds_, rec.get())) {
+                    // Match found!
                     return;
                 }
                 --left_pos_;
             }
-            // 内层表扫描完毕，外层表前进一行，内层表重置
-            right_->nextTuple();
-            left_pos_ = (int)left_buf_.size() - 1;
+
+            // If we reached the end of left_buffer_ (left_pos_ < 0), we need to advance right_
+            if (!right_->is_end()) {
+                right_->nextTuple();
+            }
+
+            // Check if right_ has reached the end
+            if (right_->is_end()) {
+                // Load the next block of left_
+                load_next_left_block();
+                if (left_buffer_.empty()) {
+                    // No more blocks of left_, we are done!
+                    isend = true;
+                    return;
+                }
+                // Reset right_ to the beginning
+                right_->beginTuple();
+                if (right_->is_end()) {
+                    // If right_ has no records at all, we are done!
+                    isend = true;
+                    return;
+                }
+                right_rec_ = right_->Next();
+                left_pos_ = (int)left_buffer_.size() - 1;
+            } else {
+                // right_ is not end, get the next record of right_
+                right_rec_ = right_->Next();
+                left_pos_ = (int)left_buffer_.size() - 1;
+            }
         }
-        isend = true;
     }
 };

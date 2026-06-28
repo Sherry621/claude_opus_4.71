@@ -41,6 +41,7 @@ class UpdateExecutor : public AbstractExecutor {
         context_ = context;
     }
     std::unique_ptr<RmRecord> Next() override {
+        context_->lock_mgr_->lock_exclusive_on_table(context_->txn_, fh_->GetFd());
         // 预先为每个set子句的右值生成原始字节串
         for (auto &set : set_clauses_) {
             auto col = tab_.get_col(set.lhs.col_name);
@@ -94,6 +95,9 @@ class UpdateExecutor : public AbstractExecutor {
 
         for (auto &rid : rids_) {
             auto rec = fh_->get_record(rid, context_);
+
+            // Record the update write operation for transaction rollback (saving the old record)
+            context_->txn_->append_write_record(new WriteRecord(WType::UPDATE_TUPLE, tab_name_, rid, *rec));
 
             // 删除旧记录在各索引上的条目
             for (auto &index : tab_.indexes) {

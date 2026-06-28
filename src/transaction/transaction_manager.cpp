@@ -21,10 +21,6 @@ std::unordered_map<txn_id_t, Transaction *> TransactionManager::txn_map = {};
  * @param {LogManager*} log_manager 日志管理器指针
  */
 Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manager) {
-    // 1. 判断传入事务参数是否为空指针
-    // 2. 如果为空指针，创建新事务
-    // 3. 把开始事务加入到全局事务表中
-    // 4. 返回当前事务指针
     std::unique_lock<std::mutex> lock(latch_);
     if (txn == nullptr) {
         txn_id_t new_txn_id = next_txn_id_++;
@@ -42,22 +38,24 @@ Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manage
  * @param {LogManager*} log_manager 日志管理器指针
  */
 void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
-    // 1. 如果存在未提交的写操作，提交所有的写操作
-    // 2. 释放所有锁
-    // 3. 释放事务相关资源，eg.锁集
-    // 4. 把事务日志刷入磁盘中
-    // 5. 更新事务状态
     if (txn == nullptr) {
         return;
     }
-    // 释放该事务持有的所有锁
+    // 释放该事务持有的所有锁 (拷贝 lock_set 以避免迭代器失效)
     auto lock_set = txn->get_lock_set();
-    for (auto &lock_id : *lock_set) {
+    std::vector<LockDataId> locks(lock_set->begin(), lock_set->end());
+    for (auto &lock_id : locks) {
         lock_manager_->unlock(txn, lock_id);
     }
     lock_set->clear();
-    // 清空写集
-    txn->get_write_set()->clear();
+
+    // 清空并释放写集中的内存
+    auto write_set = txn->get_write_set();
+    while (!write_set->empty()) {
+        delete write_set->back();
+        write_set->pop_back();
+    }
+    write_set->clear();
     // 更新事务状态
     txn->set_state(TransactionState::COMMITTED);
 }
@@ -68,11 +66,6 @@ void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
  * @param {LogManager} *log_manager 日志管理器指针
  */
 void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
-    // 1. 回滚所有写操作
-    // 2. 释放所有锁
-    // 3. 清空事务相关资源，eg.锁集
-    // 4. 把事务日志刷入磁盘中
-    // 5. 更新事务状态
     if (txn == nullptr) {
         return;
     }
@@ -83,16 +76,76 @@ void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
         auto &write_record = write_set->back();
         auto &rid = write_record->GetRid();
         auto fh = sm_manager_->fhs_.at(write_record->GetTableName()).get();
+        auto &tab = sm_manager_->db_.get_table(write_record->GetTableName());
         switch (write_record->GetWriteType()) {
-            case WType::INSERT_TUPLE:
+            case WType::INSERT_TUPLE: {
+                // 回滚插入：先在索引上删除对应项，再删除数据文件中的记录
+                auto rec = fh->get_record(rid, &context);
+                for (auto &index : tab.indexes) {
+                    auto index_name = sm_manager_->get_ix_manager()->get_index_name(tab.name, index.cols);
+                    auto ih = sm_manager_->ihs_.at(index_name).get();
+                    char *key = new char[index.col_tot_len];
+                    int offset = 0;
+                    for (size_t i = 0; i < index.col_num; ++i) {
+                        memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                        offset += index.cols[i].len;
+                    }
+                    ih->delete_entry(key, txn);
+                    delete[] key;
+                }
                 fh->delete_record(rid, &context);
                 break;
-            case WType::DELETE_TUPLE:
+            }
+            case WType::DELETE_TUPLE: {
+                // 回滚删除：重新在数据文件中插入记录，再把对应的索引条目添加回去
                 fh->insert_record(rid, write_record->GetRecord().data);
+                for (auto &index : tab.indexes) {
+                    auto index_name = sm_manager_->get_ix_manager()->get_index_name(tab.name, index.cols);
+                    auto ih = sm_manager_->ihs_.at(index_name).get();
+                    char *key = new char[index.col_tot_len];
+                    int offset = 0;
+                    for (size_t i = 0; i < index.col_num; ++i) {
+                        memcpy(key + offset, write_record->GetRecord().data + index.cols[i].offset, index.cols[i].len);
+                        offset += index.cols[i].len;
+                    }
+                    ih->insert_entry(key, rid, txn);
+                    delete[] key;
+                }
                 break;
-            case WType::UPDATE_TUPLE:
+            }
+            case WType::UPDATE_TUPLE: {
+                // 回滚更新：
+                // 1. 删除更新后（新）的索引条目
+                auto rec = fh->get_record(rid, &context);
+                for (auto &index : tab.indexes) {
+                    auto index_name = sm_manager_->get_ix_manager()->get_index_name(tab.name, index.cols);
+                    auto ih = sm_manager_->ihs_.at(index_name).get();
+                    char *key = new char[index.col_tot_len];
+                    int offset = 0;
+                    for (size_t i = 0; i < index.col_num; ++i) {
+                        memcpy(key + offset, rec->data + index.cols[i].offset, index.cols[i].len);
+                        offset += index.cols[i].len;
+                    }
+                    ih->delete_entry(key, txn);
+                    delete[] key;
+                }
+                // 2. 更新数据文件中的记录为旧值
                 fh->update_record(rid, write_record->GetRecord().data, &context);
+                // 3. 将回退（旧）后的索引条目插回索引
+                for (auto &index : tab.indexes) {
+                    auto index_name = sm_manager_->get_ix_manager()->get_index_name(tab.name, index.cols);
+                    auto ih = sm_manager_->ihs_.at(index_name).get();
+                    char *key = new char[index.col_tot_len];
+                    int offset = 0;
+                    for (size_t i = 0; i < index.col_num; ++i) {
+                        memcpy(key + offset, write_record->GetRecord().data + index.cols[i].offset, index.cols[i].len);
+                        offset += index.cols[i].len;
+                    }
+                    ih->insert_entry(key, rid, txn);
+                    delete[] key;
+                }
                 break;
+            }
             default:
                 break;
         }
@@ -100,9 +153,10 @@ void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
         delete write_record;
     }
     write_set->clear();
-    // 释放该事务持有的所有锁
+    // 释放该事务持有的所有锁 (拷贝 lock_set 以避免迭代器失效)
     auto lock_set = txn->get_lock_set();
-    for (auto &lock_id : *lock_set) {
+    std::vector<LockDataId> locks(lock_set->begin(), lock_set->end());
+    for (auto &lock_id : locks) {
         lock_manager_->unlock(txn, lock_id);
     }
     lock_set->clear();
