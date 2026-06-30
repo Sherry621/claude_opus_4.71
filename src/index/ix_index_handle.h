@@ -167,6 +167,7 @@ class IxNodeHandle {
 class IxIndexHandle {
     friend class IxScan;
     friend class IxManager;
+    friend class RecoveryManager;
 
    private:
     DiskManager *disk_manager_;
@@ -177,6 +178,8 @@ class IxIndexHandle {
 
    public:
     IxIndexHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd);
+
+    int get_fd() const { return fd_; }
 
     // for search
     bool get_value(const char *key, std::vector<Rid> *result, Transaction *transaction);

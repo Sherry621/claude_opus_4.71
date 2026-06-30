@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include "buffer_pool_manager.h"
+#include "recovery/log_manager.h"
 
 /**
  * @description: 从free_list或replacer中得到可淘汰帧页的 *frame_id
@@ -40,6 +41,9 @@ void BufferPoolManager::update_page(Page *page, PageId new_page_id, frame_id_t n
     // 2 更新page table
     // 3 重置page的data，更新page id
     if (page->is_dirty_) {
+        if (log_manager_ && page->get_page_lsn() > log_manager_->get_persist_lsn()) {
+            log_manager_->flush_log_to_disk();
+        }
         disk_manager_->write_page(page->get_page_id().fd, page->get_page_id().page_no, page->get_data(), PAGE_SIZE);
         page->is_dirty_ = false;
     }
@@ -138,6 +142,9 @@ bool BufferPoolManager::flush_page(PageId page_id) {
     }
     frame_id_t frame_id = page_table_[page_id];
     Page *page = &pages_[frame_id];
+    if (log_manager_ && page->get_page_lsn() > log_manager_->get_persist_lsn()) {
+        log_manager_->flush_log_to_disk();
+    }
     disk_manager_->write_page(page->get_page_id().fd, page->get_page_id().page_no, page->get_data(), PAGE_SIZE);
     page->is_dirty_ = false;
     return true;
@@ -185,6 +192,9 @@ bool BufferPoolManager::delete_page(PageId page_id) {
         return false;
     }
     if (page->is_dirty_) {
+        if (log_manager_ && page->get_page_lsn() > log_manager_->get_persist_lsn()) {
+            log_manager_->flush_log_to_disk();
+        }
         disk_manager_->write_page(page->get_page_id().fd, page->get_page_id().page_no, page->get_data(), PAGE_SIZE);
         page->is_dirty_ = false;
     }
@@ -205,6 +215,9 @@ void BufferPoolManager::flush_all_pages(int fd) {
         Page *page = &pages_[i];
         if (page->get_page_id().fd == fd && page->get_page_id().page_no != INVALID_PAGE_ID) {
             if (page->is_dirty_) {
+                if (log_manager_ && page->get_page_lsn() > log_manager_->get_persist_lsn()) {
+                    log_manager_->flush_log_to_disk();
+                }
                 disk_manager_->write_page(page->get_page_id().fd, page->get_page_id().page_no, page->get_data(), PAGE_SIZE);
                 page->is_dirty_ = false;
             }
@@ -223,6 +236,9 @@ void BufferPoolManager::delete_all_pages(int fd) {
         Page *page = &pages_[i];
         if (page->get_page_id().fd == fd && page->get_page_id().page_no != INVALID_PAGE_ID) {
             if (page->is_dirty_) {
+                if (log_manager_ && page->get_page_lsn() > log_manager_->get_persist_lsn()) {
+                    log_manager_->flush_log_to_disk();
+                }
                 disk_manager_->write_page(page->get_page_id().fd, page->get_page_id().page_no, page->get_data(), PAGE_SIZE);
                 page->is_dirty_ = false;
             }

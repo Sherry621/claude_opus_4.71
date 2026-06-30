@@ -44,6 +44,7 @@ struct RmPageHandle {
 class RmFileHandle {      
     friend class RmScan;    
     friend class RmManager;
+    friend class RecoveryManager;
 
    private:
     DiskManager *disk_manager_;
@@ -52,8 +53,10 @@ class RmFileHandle {
     RmFileHdr file_hdr_;    // 文件头，维护当前表文件的元数据
 
    public:
-    RmFileHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd)
-        : disk_manager_(disk_manager), buffer_pool_manager_(buffer_pool_manager), fd_(fd) {
+    std::string tab_name_;
+
+    RmFileHandle(DiskManager *disk_manager, BufferPoolManager *buffer_pool_manager, int fd, std::string tab_name = "")
+        : disk_manager_(disk_manager), buffer_pool_manager_(buffer_pool_manager), fd_(fd), tab_name_(tab_name) {
         // 注意：这里从磁盘中读出文件描述符为fd的文件的file_hdr，读到内存中
         // 这里实际就是初始化file_hdr，只不过是从磁盘中读出进行初始化
         // init file_hdr_

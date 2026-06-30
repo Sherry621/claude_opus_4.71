@@ -9,6 +9,7 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include "rm_file_handle.h"
+#include "recovery/log_manager.h"
 
 /**
  * @description: 获取当前表中记录号为rid的记录
@@ -57,6 +58,14 @@ Rid RmFileHandle::insert_record(char* buf, Context* context) {
     }
     
     Rid rid = {page_handle.page->get_page_id().page_no, slot_no};
+    if (context && context->log_mgr_ && context->txn_) {
+        RmRecord rec(file_hdr_.record_size, buf);
+        InsertLogRecord log_rec(context->txn_->get_transaction_id(), rec, rid, tab_name_);
+        log_rec.prev_lsn_ = context->txn_->get_prev_lsn();
+        lsn_t lsn = context->log_mgr_->add_log_to_buffer(&log_rec);
+        context->txn_->set_prev_lsn(lsn);
+        page_handle.page->set_page_lsn(lsn);
+    }
     buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), true);
     return rid;
 }
@@ -95,6 +104,14 @@ void RmFileHandle::delete_record(const Rid& rid, Context* context) {
         buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
     }
+    if (context && context->log_mgr_ && context->txn_) {
+        RmRecord rec(file_hdr_.record_size, page_handle.get_slot(rid.slot_no));
+        DeleteLogRecord log_rec(context->txn_->get_transaction_id(), rec, rid, tab_name_);
+        log_rec.prev_lsn_ = context->txn_->get_prev_lsn();
+        lsn_t lsn = context->log_mgr_->add_log_to_buffer(&log_rec);
+        context->txn_->set_prev_lsn(lsn);
+        page_handle.page->set_page_lsn(lsn);
+    }
     Bitmap::reset(page_handle.bitmap, rid.slot_no);
     page_handle.page_hdr->num_records--;
     if (page_handle.page_hdr->num_records == file_hdr_.num_records_per_page - 1) {
@@ -118,6 +135,15 @@ void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
+    if (context && context->log_mgr_ && context->txn_) {
+        RmRecord old_rec(file_hdr_.record_size, page_handle.get_slot(rid.slot_no));
+        RmRecord new_rec(file_hdr_.record_size, buf);
+        UpdateLogRecord log_rec(context->txn_->get_transaction_id(), old_rec, new_rec, rid, tab_name_);
+        log_rec.prev_lsn_ = context->txn_->get_prev_lsn();
+        lsn_t lsn = context->log_mgr_->add_log_to_buffer(&log_rec);
+        context->txn_->set_prev_lsn(lsn);
+        page_handle.page->set_page_lsn(lsn);
     }
     char *slot = page_handle.get_slot(rid.slot_no);
     memcpy(slot, buf, file_hdr_.record_size);

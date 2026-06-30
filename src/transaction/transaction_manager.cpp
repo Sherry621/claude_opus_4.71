@@ -29,6 +29,12 @@ Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manage
     }
     txn->set_state(TransactionState::DEFAULT);
     txn_map[txn->get_transaction_id()] = txn;
+    if (log_manager != nullptr) {
+        BeginLogRecord log_record(txn->get_transaction_id());
+        log_record.prev_lsn_ = txn->get_prev_lsn();
+        lsn_t lsn = log_manager->add_log_to_buffer(&log_record);
+        txn->set_prev_lsn(lsn);
+    }
     return txn;
 }
 
@@ -40,6 +46,13 @@ Transaction * TransactionManager::begin(Transaction* txn, LogManager* log_manage
 void TransactionManager::commit(Transaction* txn, LogManager* log_manager) {
     if (txn == nullptr) {
         return;
+    }
+    if (log_manager != nullptr) {
+        CommitLogRecord log_record(txn->get_transaction_id());
+        log_record.prev_lsn_ = txn->get_prev_lsn();
+        lsn_t lsn = log_manager->add_log_to_buffer(&log_record);
+        txn->set_prev_lsn(lsn);
+        log_manager->flush_log_to_disk();
     }
     // 释放该事务持有的所有锁 (拷贝 lock_set 以避免迭代器失效)
     auto lock_set = txn->get_lock_set();
@@ -69,9 +82,16 @@ void TransactionManager::abort(Transaction * txn, LogManager *log_manager) {
     if (txn == nullptr) {
         return;
     }
+    if (log_manager != nullptr) {
+        AbortLogRecord log_record(txn->get_transaction_id());
+        log_record.prev_lsn_ = txn->get_prev_lsn();
+        lsn_t lsn = log_manager->add_log_to_buffer(&log_record);
+        txn->set_prev_lsn(lsn);
+        log_manager->flush_log_to_disk();
+    }
     // 回滚写集中的所有写操作（逆序撤销）
     auto write_set = txn->get_write_set();
-    Context context(lock_manager_, log_manager, txn);
+    Context context(lock_manager_, nullptr, txn);
     while (!write_set->empty()) {
         auto &write_record = write_set->back();
         auto &rid = write_record->GetRid();

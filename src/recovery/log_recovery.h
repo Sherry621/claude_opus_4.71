@@ -16,6 +16,9 @@ See the Mulan PSL v2 for more details. */
 #include "storage/disk_manager.h"
 #include "system/sm_manager.h"
 
+#include <unordered_set>
+#include <memory>
+
 class RedoLogsInPage {
 public:
     RedoLogsInPage() { table_file_ = nullptr; }
@@ -31,6 +34,8 @@ public:
         sm_manager_ = sm_manager;
     }
 
+    void set_log_manager(LogManager* log_manager) { log_manager_ = log_manager; }
+
     void analyze();
     void redo();
     void undo();
@@ -39,4 +44,10 @@ private:
     DiskManager* disk_manager_;                                     // 用来读写文件
     BufferPoolManager* buffer_pool_manager_;                        // 对页面进行读写
     SmManager* sm_manager_;                                         // 访问数据库元数据
+    LogManager* log_manager_ = nullptr;
+
+    std::vector<std::shared_ptr<LogRecord>> log_records_;
+    std::unordered_set<txn_id_t> committed_txns_;
+    std::unordered_set<txn_id_t> active_txns_;
+    std::unordered_set<txn_id_t> aborted_txns_;
 };

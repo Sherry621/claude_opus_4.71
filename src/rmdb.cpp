@@ -290,10 +290,16 @@ int main(int argc, char **argv) {
         // Open database
         sm_manager->open_db(db_name);
 
+        // Set log manager for recovery manager (but NOT buffer pool yet, to avoid WAL overhead during recovery)
+        recovery->set_log_manager(log_manager.get());
+
         // recovery database
         recovery->analyze();
         recovery->redo();
         recovery->undo();
+
+        // Now set log manager for buffer pool manager (WAL enforcement for normal operations)
+        buffer_pool_manager->set_log_manager(log_manager.get());
         
         // 开启服务端，开始接受客户端连接
         start_server();
